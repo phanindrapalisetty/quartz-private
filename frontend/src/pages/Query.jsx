@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { sql, PostgreSQL } from '@codemirror/lang-sql'
 import {
-  BrainCircuit, Check, ChevronDown, ChevronRight,
+  BrainCircuit, Check, ChevronDown, ChevronRight, Database,
   Download, Loader2, Play, Plus, Save, Share2, Table2, X,
 } from 'lucide-react'
 import api from '../lib/api'
@@ -25,11 +25,13 @@ function getInitialTabs() {
 
 // ── Schema sidebar ─────────────────────────────────────────────────────────
 
-function SchemaPanel({ tables, onInsert }) {
+function SchemaPanel({ tables, extDbs, onInsert }) {
   const [open, setOpen] = useState({})
-  const toggle = (name) => setOpen((p) => ({ ...p, [name]: !p[name] }))
+  const toggle = (key) => setOpen((p) => ({ ...p, [key]: !p[key] }))
 
-  if (!tables.length) {
+  const hasAnything = tables.length > 0 || extDbs.length > 0
+
+  if (!hasAnything) {
     return (
       <div className="p-4 text-center space-y-1">
         <p className="text-xs text-gray-500">No tables loaded.</p>
@@ -38,41 +40,74 @@ function SchemaPanel({ tables, onInsert }) {
     )
   }
 
+  function TableRow({ keyName, label, cols, onInsertName }) {
+    return (
+      <div>
+        <button
+          onClick={() => toggle(keyName)}
+          className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-[#164050] transition-colors text-left"
+        >
+          {open[keyName]
+            ? <ChevronDown  size={11} className="text-gray-500 shrink-0" />
+            : <ChevronRight size={11} className="text-gray-500 shrink-0" />}
+          <Table2 size={12} className="text-[#20A7C9] shrink-0" />
+          <span
+            className="text-sm text-gray-200 font-mono truncate flex-1"
+            onClick={(e) => { e.stopPropagation(); onInsertName() }}
+            title="Click to insert"
+          >
+            {label}
+          </span>
+          <span className="text-xs text-gray-600 shrink-0">{cols.length}</span>
+        </button>
+        {open[keyName] && (
+          <div className="ml-5 border-l border-[#164050] pb-1">
+            {cols.map((col) => (
+              <div
+                key={col.column}
+                onClick={() => onInsert(col.column)}
+                className="flex items-center justify-between px-3 py-1 hover:bg-[#164050]/60 cursor-pointer"
+              >
+                <span className="text-xs text-gray-300 font-mono truncate">{col.column}</span>
+                <span className="text-xs text-gray-600 font-mono ml-2 shrink-0">{col.type}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="overflow-y-auto flex-1 py-1">
+      {/* In-memory tables */}
       {tables.map((t) => (
-        <div key={t.name}>
-          <button
-            onClick={() => toggle(t.name)}
-            className="w-full flex items-center gap-1.5 px-3 py-2 hover:bg-[#164050] transition-colors text-left"
-          >
-            {open[t.name]
-              ? <ChevronDown  size={11} className="text-gray-500 shrink-0" />
-              : <ChevronRight size={11} className="text-gray-500 shrink-0" />}
-            <Table2 size={12} className="text-[#20A7C9] shrink-0" />
-            <span
-              className="text-sm text-gray-200 font-mono truncate flex-1"
-              onClick={(e) => { e.stopPropagation(); onInsert(t.name) }}
-              title="Click to insert"
-            >
-              {t.name}
-            </span>
-            <span className="text-xs text-gray-600 shrink-0">{t.schema.length}</span>
-          </button>
-          {open[t.name] && (
-            <div className="ml-5 border-l border-[#164050] pb-1">
-              {t.schema.map((col) => (
-                <div
-                  key={col.column}
-                  onClick={() => onInsert(col.column)}
-                  className="flex items-center justify-between px-3 py-1 hover:bg-[#164050]/60 cursor-pointer"
-                >
-                  <span className="text-xs text-gray-300 font-mono truncate">{col.column}</span>
-                  <span className="text-xs text-gray-600 font-mono ml-2 shrink-0">{col.type}</span>
-                </div>
-              ))}
-            </div>
-          )}
+        <TableRow
+          key={t.name}
+          keyName={t.name}
+          label={t.name}
+          cols={t.schema}
+          onInsertName={() => onInsert(t.name)}
+        />
+      ))}
+
+      {/* Attached external databases */}
+      {extDbs.map((db) => (
+        <div key={db.alias}>
+          <div className="px-3 py-1.5 mt-1 flex items-center gap-1.5">
+            <Database size={11} className="text-amber-400 shrink-0" />
+            <span className="text-xs font-semibold text-amber-400 uppercase tracking-wider">{db.alias}</span>
+            <span className="text-xs text-gray-600">({db.db_type})</span>
+          </div>
+          {db.tables.map((t) => (
+            <TableRow
+              key={t.full_name}
+              keyName={t.full_name}
+              label={`${t.schema_name}.${t.name}`}
+              cols={t.columns}
+              onInsertName={() => onInsert(t.full_name)}
+            />
+          ))}
         </div>
       ))}
     </div>
@@ -150,6 +185,7 @@ function AskAIModal({ onClose }) {
 
 export default function Query() {
   const [tables,   setTables]   = useState([])
+  const [extDbs,   setExtDbs]   = useState([])
   const [tabs,     setTabs]     = useState(getInitialTabs)
   const [activeId, setActiveId] = useState(1)
   const [editingTabId, setEditingTabId] = useState(null)
@@ -162,6 +198,7 @@ export default function Query() {
 
   useEffect(() => {
     api.get('/sheets/loaded').then((r) => setTables(r.data)).catch(() => {})
+    api.get('/connectors/db/list').then((r) => setExtDbs(r.data)).catch(() => {})
   }, [])
 
   // ── Tab management ───────────────────────────────────────────────────────
@@ -255,9 +292,12 @@ export default function Query() {
     }
   }
 
-  // SQL autocomplete schema
+  // SQL autocomplete schema — includes both in-memory tables and attached DB tables
   const sqlSchema = {}
   tables.forEach((t) => { sqlSchema[t.name] = t.schema.map((c) => c.column) })
+  extDbs.forEach((db) => {
+    db.tables.forEach((t) => { sqlSchema[t.full_name] = t.columns.map((c) => c.column) })
+  })
 
   return (
     <div className="flex-1 flex overflow-hidden">
@@ -267,7 +307,7 @@ export default function Query() {
         <div className="px-3 py-2.5 border-b border-[#164050]">
           <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Schema</span>
         </div>
-        <SchemaPanel tables={tables} onInsert={insertText} />
+        <SchemaPanel tables={tables} extDbs={extDbs} onInsert={insertText} />
       </div>
 
       {/* ── Editor + Results ── */}

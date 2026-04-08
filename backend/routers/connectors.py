@@ -2,12 +2,20 @@ import io
 
 import polars as pl
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from services.duckdb_engine import duckdb_engine
 from services.google_sheets import to_snake_case
 from services.session_store import session_store
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
+
+
+class AttachDBRequest(BaseModel):
+    url: str
+    alias: str
+    db_type: str          # postgres | mysql | sqlite
+    read_only: bool = True
 
 
 def _require_session(session_id: str) -> dict:
@@ -52,3 +60,35 @@ async def upload_file(
         "columns": df.columns,
         "preview": df.head(5).to_dicts(),
     }
+
+
+# ── External DB connectors ─────────────────────────────────────────────────
+
+@router.post("/db/attach")
+def attach_db(body: AttachDBRequest, session_id: str):
+    _require_session(session_id)
+    try:
+        duckdb_engine.attach_database(
+            session_id, body.url, body.alias, body.db_type, body.read_only
+        )
+        dbs = duckdb_engine.list_attached_databases(session_id)
+        attached = next((d for d in dbs if d["alias"] == body.alias), None)
+        return attached or {"alias": body.alias, "db_type": body.db_type, "tables": []}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.delete("/db/{alias}")
+def detach_db(alias: str, session_id: str):
+    _require_session(session_id)
+    try:
+        duckdb_engine.detach_database(session_id, alias)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True}
+
+
+@router.get("/db/list")
+def list_dbs(session_id: str):
+    _require_session(session_id)
+    return duckdb_engine.list_attached_databases(session_id)
